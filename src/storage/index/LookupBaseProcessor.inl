@@ -61,6 +61,12 @@ LookupBaseProcessor<REQ, RESP>::requestCheck(const cpp2::LookupIndexRequest& req
         return nebula::cpp2::ErrorCode::E_INVALID_OPERATION;
     }
     indexContexts_ = indices.get_contexts();
+    if (indices.order_by_ref().has_value()) {
+        orderBy_ = *indices.get_order_by();
+    }
+    if (indices.limit_ref().has_value()) {
+        limit_ = *indices.get_limit();
+    }
 
     // setup yield columns.
     if (req.return_columns_ref().has_value()) {
@@ -157,6 +163,10 @@ StatusOr<StoragePlan<IndexID>>
 LookupBaseProcessor<REQ, RESP>::buildPlan(IndexFilterItem* filterItem, nebula::DataSet* result) {
     StoragePlan<IndexID> plan;
     auto deDup = std::make_unique<DeDupNode<IndexID>>(result, deDupColPos_);
+    std::unique_ptr<TopKNode<IndexID>> topK = nullptr;
+    if (limit_ > 0) {
+        topK = std::make_unique<TopKNode<IndexID>>(result, orderBy_, limit_);
+    }
     int32_t filterId = 0;
     std::unique_ptr<IndexOutputNode<IndexID>> out;
     auto pool = &planContext_->objPool_;
@@ -255,8 +265,16 @@ LookupBaseProcessor<REQ, RESP>::buildPlan(IndexFilterItem* filterItem, nebula::D
         if (out == nullptr) {
             return Status::Error("Index scan plan error");
         }
-        deDup->addDependency(out.get());
+        if (topK != nullptr) {
+            topK->addDependency(out.get());
+        } else {
+            deDup->addDependency(out.get());
+        }
         plan.addNode(std::move(out));
+    }
+    if (topK != nullptr) {
+        deDup->addDependency(topK.get());
+        plan.addNode(std::move(topK));
     }
     plan.addNode(std::move(deDup));
     return plan;
